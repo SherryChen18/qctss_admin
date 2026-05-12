@@ -41,11 +41,11 @@ class JobResponse(BaseModel):
         return self
     
     def get_job_id(self) -> int:
-        """Get job_id - returns 0 if not found"""
+        """Get job_id - returns 0 if not found (deprecated, use .job_id directly)"""
         return self.job_id or 0
     
     def get_status(self) -> str:
-        """Get status - returns 'unknown' if not found"""
+        """Get status - returns 'unknown' if not found (deprecated, use .status directly)"""
         return self.status or "unknown"
 
 
@@ -54,7 +54,7 @@ class JobStatus(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     
     job_id: int = Field(description="Unique job identifier")
-    status: str = Field(description="Current job status (queued, running, completed, failed, cancelled)")
+    status: str = Field(description="Current job status (pending, queued, running, completed, failed, cancelled, timeout)")
     user_id: Optional[int] = Field(default=None, description="User ID who created the job")
     queue_position: Optional[int] = Field(default=None, description="Position in queue (for queued jobs)")
     port_number: Optional[int] = Field(default=None, description="Assigned port number (for running jobs)")
@@ -74,11 +74,16 @@ class JobStatus(BaseModel):
     def is_terminal(self) -> bool:
         """Check if job is in terminal state"""
         return self.status in {"completed", "failed", "cancelled", "timeout"}
-    
+
+    @property
+    def is_pending(self) -> bool:
+        """Check if job is pending (reservation job not yet activated by start_job())"""
+        return self.status == "pending"
+
     @property
     def is_active(self) -> bool:
-        """Check if job is actively running"""
-        return self.status in {"queued", "running"}
+        """Check if job is in an active (non-terminal) state, including pending"""
+        return self.status in {"pending", "queued", "running"}
 
 
 class WebSocketMessage(BaseModel):
@@ -113,3 +118,23 @@ class WebSocketMessage(BaseModel):
             progress=self.progress,
             estimated_completion=self.estimated_completion,
         )
+
+
+class ExpDataImageInfo(BaseModel):
+    """Image extracted from experiment data zip"""
+    filename: str = Field(description="Original image filename")
+    url: str = Field(description="URL to access the image")
+
+
+class ExpDataResponse(BaseModel):
+    """Response from experiment data upload"""
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int = Field(description="ExpDataFile ID")
+    job_id: int = Field(description="Associated Job ID")
+    exp_name: str = Field(description="Experiment name from node.json")
+    run_start: str = Field(description="Experiment run start time (ISO 8601)")
+    run_end: str = Field(description="Experiment run end time (ISO 8601)")
+    file_size: int = Field(description="Zip file size in bytes")
+    created_at: str = Field(description="Upload timestamp (ISO 8601)")
+    images: List[ExpDataImageInfo] = Field(default_factory=list, description="Extracted images")

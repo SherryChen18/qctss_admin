@@ -14,10 +14,11 @@ import requests
 from .config import BackendConfig
 from .exceptions import (
     AuthenticationError, QCSetupNotActiveError, QCSetupNotFoundError, QCSetupConfigNotFoundError,
+    QCSetupWiringNotFoundError,
     ValidationError, JobClientError, JobNotFoundError, JobFailedError, InvalidJobStateError,
     BillingClientError, InvalidBillingPeriodError, TimeoutError, PermissionError,
 )
-from .models import JobResponse, JobStatus
+from .models import JobResponse, JobStatus, ExpDataResponse
 from .websocket_manager import WebSocketManager
 from . import utils
 
@@ -276,6 +277,12 @@ class QCTSSAdmin:
             if response.status_code == 403:
                 raise QCSetupNotActiveError(f"QCSetup '{name}' is not active")
             elif response.status_code == 404:
+                try:
+                    error_msg = response.json().get("error", "")
+                except Exception:
+                    error_msg = response.text
+                if "No activated wiring" in error_msg:
+                    raise QCSetupWiringNotFoundError(f"QCSetup '{name}' has no activated wiring")
                 raise QCSetupNotFoundError(f"QCSetup '{name}' not found")
             elif response.status_code != 200:
                 raise Exception(f"Failed to download wiring for '{name}': {response.status_code} {response.text}")
@@ -612,7 +619,11 @@ class QCTSSAdmin:
         on_status: Optional[Callable[[JobStatus], None]] = None,
     ) -> int:
         """
-        Wait for a job to transition from queued to running state.
+        Wait for a job to transition to running state.
+
+        For reservation jobs, the sequence is: pending → queued → running.
+        For direct jobs, the sequence is: queued → running.
+        Both flows are handled transparently.
 
         Automatically subscribes to WebSocket, monitors status, and returns
         the port number when job reaches 'running'. Disconnects WebSocket
@@ -706,6 +717,80 @@ class QCTSSAdmin:
             if job_id in self._websocket_connections:
                 self.unsubscribe_job_updates(job_id)
             raise
+
+    def upload_exp_data(
+        self,
+        job_id: int,
+        path: str,
+    ) -> ExpDataResponse:
+        """
+        Upload experiment data to a Job.
+
+        Accepts either a directory path (will be zipped automatically)
+        or an existing .zip file path.
+
+        Args:
+            job_id: Job ID to associate the data with
+            path: Path to a directory or .zip file
+
+        Returns:
+            ExpDataResponse with upload details and extracted image URLs
+
+        Raises:
+            ValidationError: If job_id is invalid or path doesn't exist
+            JobClientError: On upload failure
+        """
+        import os
+        import zipfile
+        import tempfile
+        from pathlib import Path as _Path
+
+        if not isinstance(job_id, int) or job_id <= 0:
+            raise ValidationError("Job ID must be a positive integer")
+
+        p = _Path(path)
+        if not p.exists():
+            raise ValidationError(f"Path does not exist: {path}")
+
+        tmp_zip = None
+        try:
+            if p.is_dir():
+                # Auto-zip the directory
+                tmp_fd, tmp_zip = tempfile.mkstemp(suffix='.zip')
+                os.close(tmp_fd)
+                with zipfile.ZipFile(tmp_zip, 'w', zipfile.ZIP_DEFLATED) as zf:
+                    for root, dirs, files_list in os.walk(str(p)):
+                        for f in files_list:
+                            full = os.path.join(root, f)
+                            arcname = os.path.relpath(full, str(p))
+                            zf.write(full, arcname)
+                zip_path = tmp_zip
+            elif p.suffix.lower() == '.zip':
+                zip_path = str(p)
+            else:
+                raise ValidationError(f"Path must be a directory or .zip file: {path}")
+
+            endpoint = f"/api/jobs/{job_id}/exp-data/"
+            with open(zip_path, 'rb') as f:
+                files = {'file': (os.path.basename(zip_path), f, 'application/zip')}
+                response = utils.make_request(
+                    method="POST",
+                    base_url=self.config.backend_url,
+                    endpoint=endpoint,
+                    token=self.admin_token,
+                    timeout=self.config.timeout,
+                    max_retries=self.config.max_retries,
+                    retry_delay=self.config.retry_delay,
+                    files=files,
+                )
+
+            data = response.json()
+            logger.info(f"Uploaded experiment data for job {job_id}: id={data.get('id')}, exp_name={data.get('exp_name')}")
+            return ExpDataResponse(**data)
+
+        finally:
+            if tmp_zip and os.path.exists(tmp_zip):
+                os.remove(tmp_zip)
 
     def close(self) -> None:
         """Close all WebSocket connections and clean up resources"""

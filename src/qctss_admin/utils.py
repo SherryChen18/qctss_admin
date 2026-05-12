@@ -176,6 +176,7 @@ def make_request(
     retry_delay: int = 5,
     data: Optional[Dict[str, Any]] = None,
     params: Optional[Dict[str, Any]] = None,
+    files: Optional[Dict[str, Any]] = None,
 ) -> requests.Response:
     """
     Make HTTP request with retry logic and unified X-API-KEY authentication.
@@ -202,24 +203,36 @@ def make_request(
 
     request_headers = {
         "X-API-KEY": token,
-        "Content-Type": "application/json",
         "Accept": "application/json",
         "X-SDK-Name": _SDK_NAME,
         "X-SDK-Version": _SDK_VERSION,
     }
+    # Only set Content-Type for JSON requests; multipart sets it automatically
+    if files is None:
+        request_headers["Content-Type"] = "application/json"
 
     session = create_session(max_retries=max_retries, retry_delay=retry_delay)
 
     try:
         logger.debug(f"Making {method} request to {url}")
-        response = session.request(
-            method=method,
-            url=url,
-            json=data,
-            params=params,
-            headers=request_headers,
-            timeout=timeout,
-        )
+        if files is not None:
+            response = session.request(
+                method=method,
+                url=url,
+                files=files,
+                params=params,
+                headers=request_headers,
+                timeout=timeout,
+            )
+        else:
+            response = session.request(
+                method=method,
+                url=url,
+                json=data,
+                params=params,
+                headers=request_headers,
+                timeout=timeout,
+            )
 
         if not response.ok:
             error = map_http_error(response.status_code, response.text)

@@ -66,6 +66,10 @@ class QCSetupConfigNotFoundError(QCTSSAdminError):
     """Raised when QCSetup exists but has no activated config"""
     pass
 
+class QCSetupWiringNotFoundError(QCTSSAdminError):
+    """Raised when QCSetup exists but has no activated wiring"""
+    pass
+
 
 # --- Job exceptions ---
 
